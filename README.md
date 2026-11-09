@@ -53,6 +53,41 @@ skills/modern-python/
                     pattern-matching, errors-and-resources, concurrency, identity-and-copying
 ```
 
+## Development
+
+`tools/check_skills.py` runs every Python code block of every skill in a fresh, uv-managed
+interpreter, once per version listed in `[tool.check-skills]` of `pyproject.toml`, with warnings
+turned into errors. An error that Python only prints, in a finalizer, a thread, an atexit callback
+or asyncio, also fails the block. It also validates each skill with
+[skills-ref](https://github.com/agentskills/agentskills/tree/main/skills-ref) and checks that the
+relative links in `SKILL.md` lead to files that exist inside the skill. Requires [uv](https://docs.astral.sh/uv/)
+and runs on Linux and macOS.
+
+```sh
+uv run tools/check_skills.py   # check the skills
+uv run pytest                  # test the checker
+```
+
+A comment right before a code block changes how that block runs. Items combine with `;`.
+
+| Comment | Effect |
+|---|---|
+| `<!-- test: python>=3.14 -->` | Run only on Python 3.14 and later. |
+| `<!-- test: deps=pydantic<2 httpx2 -->` | Install these first, space-separated, on top of the skill's `deps`. |
+| `<!-- test: raises=TypeError -->` | Pass only if the block raises `TypeError`. |
+| `<!-- test: skip=needs network -->` | Don't run the block. The reason is required. |
+
+A skill can set defaults for all its blocks under `[tool.check-skills.skills.<name>]`, with
+`requires-python = ">=3.13"` and `deps = [...]`. A failure on a `preview` version is only a
+warning.
+
+A block runs as `__main__` but not from a file, so a process pool started with spawn or forkserver
+(the default on Linux from Python 3.14) cannot find the functions the block defines. Mark such a
+block with `skip=`.
+
+CI runs both commands on every push and every Monday, against the newest releases of
+Python and of each library, so a deprecation shows up before it becomes an error.
+
 ## License
 
 MIT
