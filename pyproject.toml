@@ -16,7 +16,7 @@ testpaths = ["tests"]
 
 # Every ```python block in skills/ runs on each version below; see tools/check_skills.py.
 [tool.check-skills]
-python = ["3.13", "3.14"]
+python = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 preview = ["3.15"]
 timeout = 60
 

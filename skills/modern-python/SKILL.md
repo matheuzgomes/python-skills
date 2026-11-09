@@ -1,6 +1,6 @@
 ---
 name: modern-python
-description: Idiomatic, modern Python for 3.13+ - choosing collections, comprehensions and generators, decorators, typing with PEP 695 generics, dataclasses, pattern matching, exceptions and asyncio, with the legacy idioms each one replaces. Use when writing, reviewing or refactoring Python code, choosing a data structure, writing decorators, type hints, dataclasses, match statements or async code.
+description: Idiomatic, secure and efficient Python for 3.13+ - choosing collections, comprehensions and generators, decorators, typing with PEP 695 generics, dataclasses, pattern matching, exceptions and asyncio, with the legacy idioms each one replaces; security for untrusted input, pytest tests, performance, production pitfalls (money, time zones, encoding, logging), replacements for Python 3.10-3.12 and the 3.14 features. Use when writing, reviewing or refactoring Python code, choosing a data structure, writing decorators, type hints, dataclasses, match statements, async code or tests, handling untrusted input, money or dates, or making code faster.
 ---
 
 # Modern Python (3.13+)
@@ -9,7 +9,8 @@ Write Python the way 3.13 allows, not the way older tutorials taught. Most mista
 habits that predate 3.10–3.13, so the rules below focus on decisions and version changes, not basics.
 
 **Target version.** These rules assume `requires-python >= 3.13`. If the project declares an older
-minimum (`pyproject.toml`, `setup.cfg`, CI matrix), follow the project and skip features it can't use.
+minimum (`pyproject.toml`, `setup.cfg`, CI matrix), follow the project: `references/older-pythons.md`
+lists what to use instead. Never raise the minimum or upgrade a library unless asked.
 
 ## Always-on rules
 
@@ -32,6 +33,9 @@ minimum (`pyproject.toml`, `setup.cfg`, CI matrix), follow the project and skip 
    resources with `with`, never `__del__`.
 10. **Async:** run concurrent tasks inside `async with asyncio.TaskGroup()` and bound them with
     `async with asyncio.timeout(s)`. Avoid bare `create_task` and `gather` for structured work.
+11. **Untrusted input:** never into a shell, SQL text, `pickle`, `yaml.load`, `eval` or a path without
+    a check. Pass argument lists, bind SQL parameters, use `yaml.safe_load`, and resolve user paths
+    inside a base. Tokens come from `secrets` and are compared as bytes with `hmac.compare_digest`.
 
 ## Read the matching reference before writing that kind of code
 
@@ -48,9 +52,16 @@ Each file is short and self-contained. Read only the ones the task needs.
 | raise, catch or group exceptions; manage resources or object lifetime | [references/errors-and-resources.md](references/errors-and-resources.md) |
 | write asyncio, threads or processes | [references/concurrency.md](references/concurrency.md) |
 | compare with `is`, copy objects, slice sequences, use sentinels | [references/identity-and-copying.md](references/identity-and-copying.md) |
+| take outside input: run a command, build SQL, deserialize, store passwords or tokens, open a user path, extract an archive, parse XML, fetch a URL | [references/security.md](references/security.md) |
+| write or change tests: pytest, parametrize, fixtures, fakes, async tests | [references/testing.md](references/testing.md) |
+| handle money, floats, dates and time zones, text encoding, logging or configuration | [references/production-pitfalls.md](references/production-pitfalls.md) |
+| make code faster or use less memory | [references/performance.md](references/performance.md) |
+| write code that must also run on Python 3.10–3.12 | [references/older-pythons.md](references/older-pythons.md) |
+| use t-strings, lazy annotations or other 3.14 features, in a project that requires 3.14+ | [references/python-3.14.md](references/python-3.14.md) |
 
 ## When reviewing code
 
+Follow [references/review.md](references/review.md): run the tools first, then check what they miss.
 Flag legacy idioms using the substitution tables at the top of `typing.md` and `modeling.md`. Suggest
 the modern form only when the project's minimum Python version supports it. Don't rewrite working code
 that is out of scope for the task.

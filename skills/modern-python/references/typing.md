@@ -1,7 +1,7 @@
 # Type hints in Python 3.13
 
 Contents: legacy → modern table · generics · aliases · choosing parameter and return types · Protocol ·
-narrowing · classes · TypedDict · deprecation · runtime facts · sources
+narrowing · Literal, NewType and overload · classes · TypedDict · deprecation · runtime facts · sources
 
 ## Legacy → modern
 
@@ -133,6 +133,46 @@ def describe(value: int | str) -> str:
 assert describe("a") == "A" and describe(1) == "2"
 ```
 
+## Literal, NewType and overload
+
+- `Literal["open", "paid"]` is a closed set of values, for strings that come from outside, such as
+  JSON, when an `Enum` would only add conversions. With `assert_never` in the last `case`, the
+  checker reports a value that a `match` doesn't handle.
+- `NewType("UserId", int)` makes ids of different things different types for the checker, at no
+  cost at runtime, so passing an `OrderId` where a `UserId` goes is an error.
+- `@overload` describes a return type that depends on the arguments. Only the undecorated
+  implementation at the end runs.
+
+```python
+from typing import Literal, NewType, assert_never, overload
+
+UserId = NewType("UserId", int)
+OrderId = NewType("OrderId", int)
+type Status = Literal["open", "paid", "cancelled"]
+
+def label(status: Status) -> str:
+    match status:
+        case "open" | "paid":
+            return status.title()
+        case "cancelled":
+            return "Cancelled"
+        case _:
+            assert_never(status)  # a checker error here when a new status is not handled
+
+def cancel(order: OrderId, by: UserId) -> Status:  # cancel(user, order) is a checker error
+    return "cancelled"
+
+@overload
+def first_or(items: list[str], default: None = None) -> str | None: ...
+@overload
+def first_or(items: list[str], default: str) -> str: ...
+def first_or(items: list[str], default: str | None = None) -> str | None:
+    return items[0] if items else default
+
+assert type(UserId(7)) is int and label(cancel(OrderId(10), UserId(7))) == "Cancelled"
+assert first_or([], "none") == "none" and first_or([]) is None
+```
+
 ## Classes
 
 ```python
@@ -209,6 +249,8 @@ Checkers also flag every use. At runtime the default filters hide `DeprecationWa
 - https://peps.python.org/pep-0585/ · https://peps.python.org/pep-0604/ · https://peps.python.org/pep-0695/
 - https://peps.python.org/pep-0696/ · https://peps.python.org/pep-0698/ · https://peps.python.org/pep-0702/
 - https://peps.python.org/pep-0705/ · https://peps.python.org/pep-0742/
+- https://peps.python.org/pep-0586/ (Literal) · https://docs.python.org/3.13/library/typing.html#newtype ·
+  https://docs.python.org/3.13/library/typing.html#typing.overload
 - https://docs.python.org/3/whatsnew/3.11.html · https://docs.python.org/3/whatsnew/3.12.html ·
   https://docs.python.org/3/whatsnew/3.13.html
 - https://docs.python.org/3/howto/annotations.html

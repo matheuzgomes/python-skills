@@ -15,10 +15,16 @@ rather than basics that LLMs already know:
 - structural pattern matching
 - exceptions: chaining, notes, `ExceptionGroup` / `except*`, context managers, `weakref.finalize`
 - asyncio `TaskGroup` and `timeout`, threads vs processes, the experimental free-threaded build
+- security for untrusted input: commands, SQL, deserializing, secrets, passwords, paths, archives,
+  XML and URLs, with the ruff rule that flags each case or a note that none does
+- tests with pytest, performance, and production pitfalls: money, floats, time zones, encoding,
+  logging and configuration
+- a review checklist, what to use instead on Python 3.10–3.12, and the 3.14 features
 
 `SKILL.md` stays short and loads only when the agent works on Python. Detailed rules live in
 `references/` and are read one file at a time, only when the task needs them. Every reference file
-lists the official documentation and PEPs it is based on, and every code example runs on Python 3.13.
+lists the official documentation and PEPs it is based on, and every code example runs on each
+Python it applies to (see [Development](#development)).
 
 ## Install
 
@@ -50,7 +56,9 @@ npx skills remove modern-python -g
 skills/modern-python/
   SKILL.md          always-on rules and an index of when to read each reference
   references/       collections, comprehensions, functions-and-decorators, typing, modeling,
-                    pattern-matching, errors-and-resources, concurrency, identity-and-copying
+                    pattern-matching, errors-and-resources, concurrency, identity-and-copying,
+                    security, testing, performance, production-pitfalls, review,
+                    older-pythons, python-3.14
 ```
 
 ## Development
@@ -76,6 +84,7 @@ A comment right before a code block changes how that block runs. Items combine w
 | `<!-- test: deps=pydantic<2 httpx2 -->` | Install these first, space-separated, on top of the skill's `deps`. |
 | `<!-- test: raises=TypeError -->` | Pass only if the block raises `TypeError`. |
 | `<!-- test: skip=needs network -->` | Don't run the block. The reason is required. |
+| `<!-- test: pytest -->` | Run the block as a test file with pytest, which is installed for it. Use `pytest.raises` in the test instead of `raises=`. A skipped, xfailed or xpassed test fails the block, and no `conftest.py`, `PYTEST_` or `HYPOTHESIS_` variable from outside applies. |
 
 A skill can set defaults for all its blocks under `[tool.check-skills.skills.<name>]`, with
 `requires-python = ">=3.13"` and `deps = [...]`. A failure on a `preview` version is only a

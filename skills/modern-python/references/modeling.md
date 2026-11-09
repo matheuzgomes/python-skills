@@ -1,7 +1,7 @@
 # Modeling data: dataclass, NamedTuple, Enum
 
 Contents: legacy → modern table · which builder · dataclass options · fields · post-init · hashing and
-equality · modified copies · enums · design smell · sources
+equality · modified copies · enums · parse at the edge · design smell · sources
 
 ## Legacy → modern
 
@@ -184,6 +184,45 @@ assert Status.ACTIVE == "active" and Status("blocked") is Status.BLOCKED
 
 Compare members with `is` or `==`. In `match`, write `case Status.ACTIVE:` (a dotted name), never a bare
 name.
+
+## Parse at the edge
+
+Convert outside data (a request body, a file, a queue message) into typed objects once, where it
+enters the program, and reject it there with a clear error. Code past that point trusts its types
+and never checks the same thing again. When the project uses pydantic, that model is the edge.
+
+```python
+from collections.abc import Mapping
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+
+@dataclass(frozen=True, slots=True)
+class Coupon:
+    code: str
+    percent: Decimal
+
+    def __post_init__(self) -> None:
+        if not 0 < self.percent <= 100:
+            raise ValueError(f"percent must be in (0, 100], got {self.percent}")
+
+def parse_coupon(raw: Mapping[str, object]) -> Coupon:
+    match raw:
+        case {"code": str(code), "percent": str(percent)}:
+            try:
+                return Coupon(code, Decimal(percent))
+            except InvalidOperation as exc:
+                raise ValueError(f"percent is not a number: {percent!r}") from exc
+        case _:
+            raise ValueError("expected a code and a percent, both as strings")
+
+assert parse_coupon({"code": "OFF10", "percent": "10"}) == Coupon("OFF10", Decimal("10"))
+for bad in ({"code": "X"}, {"code": "X", "percent": "abc"}, {"code": "X", "percent": "150"}):
+    try:
+        parse_coupon(bad)
+    except ValueError:
+        continue
+    raise AssertionError(bad)
+```
 
 ## Design smell
 
