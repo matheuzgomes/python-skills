@@ -1,0 +1,31 @@
+[project]
+name = "python-skills"
+version = "0.1.0"
+description = "Agent skills for writing idiomatic, modern Python."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["tools"]
+testpaths = ["tests"]
+
+# Every ```python block in skills/ runs on each version below; see tools/check_skills.py.
+[tool.check-skills]
+python = ["3.13", "3.14"]
+preview = ["3.15"]
+timeout = 60
+
+[tool.check-skills.skills.modern-python]
+requires-python = ">=3.13"
+
+[dependency-groups]
+dev = [
+    "coverage>=7.17.2",
+    "pytest>=9.2.0",
+    "skills-ref>=0.1.1",
+]
