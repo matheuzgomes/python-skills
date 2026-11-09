@@ -1,4 +1,5 @@
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -325,6 +326,15 @@ def test_a_dependency_uv_cannot_read_fails_with_the_uv_error():
     assert result.message.startswith("error: ")
 
 
+@pytest.mark.parametrize("variable", ["FORCE_COLOR", "CLICOLOR_FORCE"])
+def test_colors_forced_by_the_environment_keep_the_uv_error_readable(monkeypatch, variable):
+    monkeypatch.setenv(variable, "1")
+
+    result = run_block(marked("deps=pydantic<<2", "pass"), "3.13", timeout=60)
+
+    assert result.message.startswith("error: ")
+
+
 def test_marker_deps_add_to_the_skill_defaults():
     defaults = SkillDefaults(min_python=(3, 13), deps=("fastapi",))
     markdown = "<!-- test: deps=httpx2 sqlalchemy -->\n```python\npass\n```\n"
@@ -597,3 +607,177 @@ def test_main_lists_structure_problems_and_fails(tmp_path, capsys):
 
     assert main(["--root", str(root)]) == 1
     assert capsys.readouterr().out == "FAIL skills/demo/SKILL.md broken link: references/missing.md\n"
+
+
+# Unit E: blocks that run as a test file with pytest
+
+
+def test_the_pytest_item_marks_a_block_and_combines_with_others():
+    block = marked("pytest; deps=attrs; python>=3.14", "def test_a():\n    pass")
+
+    assert (block.pytest, block.deps, block.min_python, block.error) == (True, ("attrs",), (3, 14), None)
+    assert only_block("x = 1").pytest is False
+
+
+def test_pytest_does_not_combine_with_raises():
+    block = marked("pytest; raises=ValueError", "def test_a():\n    pass")
+
+    assert block.error == "raises does not apply to a pytest block; use pytest.raises in the test"
+
+
+def test_a_pytest_block_passes_when_its_tests_pass():
+    code = "import pytest\n@pytest.mark.parametrize('n', [1, 2])\ndef test_positive(n):\n    assert n > 0"
+
+    assert run_block(marked("pytest", code), "3.13", timeout=60) == Result(
+        "skills/demo/SKILL.md:2", "3.13", Status.OK, ""
+    )
+
+
+def test_a_pytest_block_lists_each_failing_test_with_its_reason():
+    code = "def test_a():\n    assert 1 == 2\ndef test_b():\n    raise KeyError('k')"
+
+    result = run_block(marked("pytest", code), "3.13", timeout=60)
+
+    assert (result.status, result.message) == (Status.FAIL, "FAILED test_a - assert 1 == 2; FAILED test_b - KeyError: 'k'")
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        ("import warnings\ndef test_w():\n    warnings.warn('old', DeprecationWarning)", "DeprecationWarning: old"),
+        (
+            "class Leaky:\n    def __del__(self):\n        raise ValueError('del')\ndef test_d():\n    Leaky()",
+            "PytestUnraisableExceptionWarning",
+        ),
+        (
+            "import threading\ndef test_t():\n    t = threading.Thread(target=lambda: 1 / 0)\n    t.start()\n    t.join()",
+            "PytestUnhandledThreadExceptionWarning",
+        ),
+    ],
+    ids=["warning", "finalizer", "thread"],
+)
+def test_a_pytest_block_fails_on_a_warning_or_an_error_python_only_prints(code, reason):
+    result = run_block(marked("pytest", code), "3.13", timeout=60)
+
+    assert result.status is Status.FAIL
+    assert reason in result.message
+
+
+def test_a_pytest_block_without_tests_fails():
+    result = run_block(marked("pytest", "x = 1"), "3.13", timeout=60)
+
+    assert (result.status, result.message) == (Status.FAIL, "no tests ran")
+
+
+def test_a_pytest_block_that_cannot_be_collected_fails_with_the_reason():
+    result = run_block(marked("pytest", "import not_a_module\ndef test_a():\n    pass"), "3.13", timeout=60)
+
+    assert (result.status, result.message) == (
+        Status.FAIL,
+        "ERROR test_block.py - ModuleNotFoundError: No module named 'not_a_module'",
+    )
+
+
+def test_a_pytest_block_gets_its_deps_on_top_of_pytest():
+    code = "import attrs\ndef test_attrs():\n    assert attrs.define"
+
+    assert run_block(marked("pytest; deps=attrs", code), "3.13", timeout=60).status is Status.OK
+
+
+def test_a_pytest_block_whose_deps_uv_cannot_read_fails_with_the_uv_error():
+    result = run_block(marked("pytest; deps=pydantic<<2", "def test_a():\n    pass"), "3.13", timeout=60)
+
+    assert result.status is Status.FAIL
+    assert result.message.startswith("error:")
+
+
+@pytest.fixture
+def scratch_root(tmp_path, monkeypatch):
+    """An empty folder where the checker makes its scratch directories, for this test only."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", None)  # read TMPDIR again
+    return tmp_path
+
+
+def test_a_pytest_block_ignores_a_conftest_above_its_directory(scratch_root):
+    sentinel = scratch_root.parent / f"{scratch_root.name}-conftest-ran"
+    (scratch_root / "conftest.py").write_text(f"open({str(sentinel)!r}, 'w').close()\n", encoding="utf-8")
+
+    result = run_block(marked("pytest", "def test_a():\n    pass"), "3.13", timeout=60)
+
+    assert result.status is Status.OK
+    assert not sentinel.exists()
+
+
+def test_tmp_path_in_a_pytest_block_stays_inside_its_scratch_directory(scratch_root):
+    code = "def test_writes(tmp_path):\n    (tmp_path / 'out.txt').write_text('x')"
+
+    assert run_block(marked("pytest", code), "3.13", timeout=60).status is Status.OK
+    assert list(scratch_root.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("PYTEST_ADDOPTS", "-p no:unraisableexception -p no:threadexception"),
+        ("PYTEST_PLUGINS", "not_a_plugin"),
+    ],
+)
+def test_pytest_settings_from_the_environment_do_not_reach_a_block(monkeypatch, variable, value):
+    monkeypatch.setenv(variable, value)
+    leaky = "class Leaky:\n    def __del__(self):\n        raise ValueError('del')\ndef test_d():\n    Leaky()"
+
+    result = run_block(marked("pytest", leaky), "3.13", timeout=60)
+
+    assert result.status is Status.FAIL
+    assert "PytestUnraisableExceptionWarning" in result.message
+
+
+def test_a_hypothesis_block_keeps_its_examples_inside_its_scratch_directory(tmp_path, monkeypatch):
+    storage = tmp_path / "hypothesis"
+    monkeypatch.setenv("HYPOTHESIS_STORAGE_DIRECTORY", str(storage))
+    # Hypothesis saves a failing example in its database, to try it first on the next run.
+    code = "from hypothesis import given, strategies as st\n@given(st.integers())\ndef test_a(n):\n    assert n < 10"
+
+    assert run_block(marked("pytest; deps=hypothesis", code), "3.13", timeout=60).status is Status.FAIL
+    assert not storage.exists()
+
+
+def test_a_pytest_block_keeps_its_plugins_when_the_environment_disables_autoloading(monkeypatch):
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    code = "import pytest\n@pytest.mark.anyio\nasync def test_a():\n    pass"
+
+    assert run_block(marked("pytest; deps=anyio", code), "3.13", timeout=60).status is Status.OK
+
+
+@pytest.mark.parametrize("variable", ["PY_COLORS", "FORCE_COLOR"])
+def test_colors_forced_by_the_environment_keep_the_failure_readable(monkeypatch, variable):
+    monkeypatch.setenv(variable, "1")
+
+    result = run_block(marked("pytest", "def test_a():\n    assert 1 == 2"), "3.13", timeout=60)
+
+    assert result.message == "FAILED test_a - assert 1 == 2"
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("import pytest\ndef test_a():\n    pytest.skip('not today')", "SKIPPED [1] test_block.py:3: not today"),
+        ("import pytest\n@pytest.mark.skipif(True, reason='never')\ndef test_a():\n    pass", "SKIPPED [1] test_block.py:2: never"),
+        ("import pytest\n@pytest.mark.xfail\ndef test_a():\n    pass", "FAILED test_a - [XPASS(strict)]"),
+        ("import pytest\n@pytest.mark.xfail(strict=False)\ndef test_a():\n    pass", "XPASS test_a"),
+        ("import pytest\n@pytest.mark.xfail(reason='known')\ndef test_a():\n    assert 1 == 2", "XFAIL test_a - known"),
+    ],
+    ids=["skip", "skipif", "xpass", "xpass not strict", "xfail"],
+)
+def test_a_pytest_block_whose_test_did_not_really_run_fails(code, message):
+    assert run_block(marked("pytest", code), "3.13", timeout=60) == Result(
+        "skills/demo/SKILL.md:2", "3.13", Status.FAIL, message
+    )
+
+
+def test_a_pytest_block_with_a_syntax_error_fails_with_the_syntax_error():
+    result = run_block(marked("pytest", "def test_a(:\n    pass"), "3.13", timeout=60)
+
+    assert result.status is Status.FAIL
+    assert result.message.startswith("ERROR test_block.py - SyntaxError: ")

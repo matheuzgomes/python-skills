@@ -9,6 +9,7 @@ block_runner.py). A comment right before a block changes how it runs; items comb
     <!-- test: deps=pydantic<2 httpx2 -->  install these first, on top of the skill's deps
     <!-- test: raises=TypeError -->        pass only if the block raises TypeError
     <!-- test: skip=needs network -->      do not run; the reason is required
+    <!-- test: pytest -->                  run as a test file with pytest, installed for it
 
 Each skill must also pass the Agent Skills validator, and the relative links in its SKILL.md
 must lead to files that exist.
@@ -50,8 +51,39 @@ INLINE_CODE = re.compile(r"`[^`\n]*`")
 LINK = re.compile(r"\[[^\]]*\]\((?P<target><[^>\n]*>|[^)\s]+)[^)]*\)")
 REFERENCE_LINK = re.compile(r"^[ \t]*\[(?!\^)[^\]]+\]:[ \t]*(?P<target><[^>\n]*>|\S+)", re.MULTILINE)
 RUNNER = Path(__file__).with_name("block_runner.py")
-# uv runs inside the environment these point to, even with --no-project.
-ACTIVE_ENVIRONMENT_VARIABLES = frozenset({"VIRTUAL_ENV", "CONDA_PREFIX"})
+TEST_FILE = "test_block.py"
+PYTEST_ARGS = (
+    "-m",
+    "pytest",
+    "-vv",  # keeps pytest from cutting the reason of a failure to the width of a terminal
+    "-rfEsxX",  # lists skipped, xfailed and xpassed tests next to the failures
+    "-W",
+    "error",
+    "-o",
+    "xfail_strict=true",  # a test marked xfail that passes fails
+    "-p",
+    "no:cacheprovider",
+    # Nothing outside the scratch directory takes part: no config file, no conftest.py above it,
+    # and tmp_path inside it.
+    "-c",
+    os.devnull,
+    "--rootdir",
+    ".",
+    "--noconftest",
+    "--basetemp",
+    "basetemp",
+    "--color",
+    "no",
+    TEST_FILE,
+)
+PYTEST_NO_TESTS = 5
+# Summary lines of a test that failed or didn't really run.
+PYTEST_PROBLEMS = ("FAILED ", "ERROR ", "SKIPPED ", "XFAIL ", "XPASS ")
+# uv runs inside the environment the first two point to, even with --no-project. The others color
+# the output the checker reads.
+IGNORED_ENVIRONMENT = frozenset({"VIRTUAL_ENV", "CONDA_PREFIX", "PY_COLORS", "FORCE_COLOR", "CLICOLOR_FORCE"})
+# Settings of pytest and Hypothesis, such as a Hypothesis example database outside the scratch directory.
+IGNORED_ENVIRONMENT_PREFIXES = ("PYTEST_", "HYPOTHESIS_")
 
 
 class SpecError(ValueError):
@@ -81,6 +113,7 @@ class Block:
     raises: str | None = None
     skip: str | None = None
     error: str | None = None
+    pytest: bool = False
 
     @property
     def where(self) -> str:
@@ -185,6 +218,9 @@ def _parse_items(items: str, default_deps: tuple[str, ...]) -> dict[str, object]
         if match := PYTHON_ITEM.fullmatch(item):
             changes["min_python"] = parse_version(match["version"])
             continue
+        if item == "pytest":
+            changes["pytest"] = True
+            continue
         key, _, value = (part.strip() for part in item.partition("="))
         if key not in ("deps", "raises", "skip"):
             raise SpecError(f"unknown marker item {item!r}")
@@ -193,6 +229,8 @@ def _parse_items(items: str, default_deps: tuple[str, ...]) -> dict[str, object]
                 raise SpecError("skip needs a reason, as in skip=needs network")
             raise SpecError(f"{key} needs a value")
         changes[key] = (*default_deps, *value.split()) if key == "deps" else value
+    if "pytest" in changes and "raises" in changes:
+        raise SpecError("raises does not apply to a pytest block; use pytest.raises in the test")
     return changes
 
 
@@ -238,17 +276,42 @@ def interpreter_version(python: str) -> str | None:
 
 
 def run_block(block: Block, python: str, timeout: float) -> Result:
-    """Run a block in a fresh interpreter and empty directory, with warnings as errors."""
-    command = _uv_python(python, block.deps, "-W", "error", str(RUNNER))
-    outcome = _run_in_scratch(command, timeout, stdin=block.code)
+    """Run a block in a fresh interpreter and empty directory, with warnings as errors. A pytest
+    block runs as a test file there."""
+    if block.pytest:
+        command = _uv_python(python, (*block.deps, "pytest"), "-W", "error", *PYTEST_ARGS)
+        outcome = _run_in_scratch(command, timeout, files={TEST_FILE: block.code})
+    else:
+        command = _uv_python(python, block.deps, "-W", "error", str(RUNNER))
+        outcome = _run_in_scratch(command, timeout, stdin=block.code)
     if outcome.returncode is None:
         return Result(block.where, python, Status.FAIL, f"timeout after {timeout:g} s")
+    verdict = _test_verdict(outcome) if block.pytest else _code_verdict(block, outcome)
+    return Result(block.where, python, *verdict)
+
+
+def _code_verdict(block: Block, outcome: Outcome) -> tuple[Status, str]:
     report = _runner_report(outcome.stderr)
     if report is None:  # uv failed, or the block ended the interpreter before the runner could report
         if outcome.returncode != 0:
-            return Result(block.where, python, Status.FAIL, _error_line(outcome))
+            return Status.FAIL, _error_line(outcome)
         report = Report(raised=None, message=None, problems=[])
-    return Result(block.where, python, *_verdict(block, report))
+    return _verdict(block, report)
+
+
+def _test_verdict(outcome: Outcome) -> tuple[Status, str]:
+    """Each test that failed or didn't really run, with its reason, from pytest's short summary."""
+    if outcome.returncode == PYTEST_NO_TESTS:
+        return Status.FAIL, "no tests ran"
+    lines = outcome.stdout.splitlines()
+    problems = [line.replace(f"{TEST_FILE}::", "").rstrip() for line in lines if line.startswith(PYTEST_PROBLEMS)]
+    if not problems:  # pytest passed, or uv failed before it started
+        return (Status.OK, "") if outcome.returncode == 0 else (Status.FAIL, _error_line(outcome))
+    if problems[0].startswith("ERROR ") and " - " not in problems[0]:
+        # A file that can't be collected has its reason only in the details, on the last E line.
+        reasons = [line.removeprefix("E").strip() for line in lines if line.startswith("E ")]
+        problems[0] += f" - {reasons[-1] if reasons else ''}"
+    return Status.FAIL, "; ".join(problems)
 
 
 def _runner_report(stderr: str) -> Report | None:
@@ -279,10 +342,14 @@ def _uv_python(python: str, deps: Iterable[str], *args: str) -> list[str]:
     return [*uv, *with_deps, "--", "python", "-I", *args]
 
 
-def _run_in_scratch(command: list[str], timeout: float, stdin: str = "") -> Outcome:
-    """Run a command in a new empty directory, outside any active virtual environment."""
-    env = {k: v for k, v in os.environ.items() if k not in ACTIVE_ENVIRONMENT_VARIABLES}
+def _run_in_scratch(
+    command: list[str], timeout: float, stdin: str = "", files: Mapping[str, str] | None = None
+) -> Outcome:
+    """Run a command in a new directory, empty but for files, outside any active virtual environment."""
+    env = {name: value for name, value in os.environ.items() if not _ignored(name)}
     with tempfile.TemporaryDirectory() as workdir:
+        for name, text in (files or {}).items():
+            Path(workdir, name).write_text(text, encoding="utf-8")
         # A session of its own lets a timeout kill uv and the interpreter it started.
         with subprocess.Popen(  # noqa: S603 - fixed uv command, no shell; the code is this repo's
             command,
@@ -302,6 +369,10 @@ def _run_in_scratch(command: list[str], timeout: float, stdin: str = "") -> Outc
                 process.communicate()
                 return Outcome(None, "", "")
     return Outcome(process.returncode, stdout, stderr)
+
+
+def _ignored(variable: str) -> bool:
+    return variable in IGNORED_ENVIRONMENT or variable.startswith(IGNORED_ENVIRONMENT_PREFIXES)
 
 
 def _error_line(outcome: Outcome) -> str:
